@@ -5,14 +5,32 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
+import json
 from pathlib import Path
+from pydantic import BaseModel
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+# Pydantic models
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+# Load teacher credentials
+def load_teachers():
+    try:
+        with open(os.path.join(Path(__file__).parent, "teachers.json"), "r") as f:
+            return json.load(f)["teachers"]
+    except FileNotFoundError:
+        return {}
+
+# Simple session storage (in production, use secure sessions)
+sessions = {}
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -78,6 +96,42 @@ activities = {
 }
 
 
+@app.post("/login")
+def login(login_data: LoginRequest):
+    """Authenticate a teacher"""
+    teachers = load_teachers()
+    
+    if login_data.email not in teachers:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    if teachers[login_data.email] != login_data.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Create a simple session token (in production, use JWT or secure sessions)
+    import secrets
+    session_token = secrets.token_hex(16)
+    sessions[session_token] = login_data.email
+    
+    return {"message": "Login successful", "session_token": session_token, "email": login_data.email}
+
+@app.post("/logout")
+def logout(session_token: str = None):
+    """Logout a teacher"""
+    if session_token and session_token in sessions:
+        del sessions[session_token]
+    return {"message": "Logout successful"}
+
+@app.get("/verify_session")
+def verify_session(session_token: str = None):
+    """Verify if a session is valid"""
+    if session_token and session_token in sessions:
+        return {"valid": True, "email": sessions[session_token]}
+    return {"valid": False}
+
+def is_authenticated(session_token: str = None) -> bool:
+    """Check if user is authenticated"""
+    return session_token and session_token in sessions
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
@@ -89,8 +143,12 @@ def get_activities():
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, session_token: str = None):
+    """Sign up a student for an activity (teachers only)"""
+    # Check authentication
+    if not is_authenticated(session_token):
+        raise HTTPException(status_code=401, detail="Authentication required. Only teachers can register students.")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +169,12 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, session_token: str = None):
+    """Unregister a student from an activity (teachers only)"""
+    # Check authentication
+    if not is_authenticated(session_token):
+        raise HTTPException(status_code=401, detail="Authentication required. Only teachers can unregister students.")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
